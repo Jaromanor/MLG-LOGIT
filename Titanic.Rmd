@@ -169,6 +169,21 @@ Comparación con modelo nulo: La gran diferencia en log-verosimilitud (G2 = 399.
 
 ### Curva ROC
 
+Se generan las probabilidades predichas de supervivencia (valores entre 0 y 1) para cada observación del marco de datos, usando el modelo m2 (estimado). Este es el paso previo porque a partir de estas probabilidades escojo los umbrales para indicar cuándo la observación es Y=1 (Sobrevivió) o cuándo Y=0 (No sobrevivió)
+
+```{r}
+library(pROC)
+```
+```{r}
+# Probabilidades predichas
+prob_pred <- predict(m2, type = "response")
+prob_pred
+```
+type = "response" asegura que las predicciones sean probabilidades (en lugar de log-odds)
+prob_pred será un vector numérico con una probabilidad para cada pasajero.
+
+Antes de construir la curva ROC sería interesante revisar mediante gráficos de densidades, cómo se solapan las observaciones a las que de acuerdo con el modelo estimado se les asignó una probabilidad.
+
 ```{r}
 hist_roc<-data.frame(real=titanic_data$Survived,pred=prob_pred)
 hist_roc$real<-as.factor(hist_roc$real)
@@ -183,20 +198,9 @@ ggplot(hist_roc, aes(x = pred, fill = factor(real))) +
   labs(x = "Probabilidad", y = "Densidad", title = "Distribución de probabilidades") +
   theme_minimal()
 ```
+El gráfico muestra que existe un grupo importante de personas no sobrevivientes con probabilidades inferiores estimdas por debajo del 25%, sin embargo en este mismo grupo se puede encontrar un importante grupo de observaciones con más del 50% de probabilidad. Respecto a los sobrevivientes tienden a acumularse en porcentajes altos, sin embargo un importante grupo de sobrevivientes tiene porcentajes bajos. Definitivamente el modelo estimado tendrá un número importante de falsos positivos y falsos negativos dependiendo del umbral.
 
-Se generan las probabilidades predichas de supervivencia (valores entre 0 y 1) para cada observación del marco de datos, usando el modelo m2 (estimado).
-
-```{r}
-library(pROC)
-```
-```{r}
-# Probabilidades predichas
-prob_pred <- predict(m2, type = "response")
-prob_pred
-```
-type = "response" asegura que las predicciones sean probabilidades (en lugar de log-odds)
-prob_pred será un vector numérico con una probabilidad para cada pasajero.
-
+Calculamos la curva ROC:
 
 ```{r}
 # Curva ROC
@@ -229,45 +233,297 @@ El umbral 0.418491 optimiza el rendimiento de tu modelo para el problema del Tit
 library(caret)
 
 # Umbral de 0.5
-pred_clase <- ifelse(prob_pred > 0.5, 1, 0)
+pred_clase <- ifelse(prob_pred > 0.418491, 1, 0)
 confusionMatrix(factor(pred_clase), factor(titanic_data$Survived))
 ```
+
+Con el umbral "óptimo" se obtiene:
+
+- Realmente sobrevivieron 342 personas y murieron 545.
+- Verdaderos Negativos (VN): 446 - Correctamente predichos como no sobrevivientes.
+- Falsos Negativos (FN): 79 - Sobrevivientes mal clasificados como no sobrevivientes.
+- Falsos Positivos (FP): 99 - No sobrevivientes mal clasificados como sobrevivientes.
+- Verdaderos Positivos (VP): 263 - Correctamente predichos como sobrevivientes.
+
+-Exactitud o Accuracy: 0.79, es decir, el modelo clasifica correctamente el 79.93% de los pasajeros. Buen desempeño, pero la exactitud puede ser engañosa si las clases están desbalanceadas (aquí hay más no sobrevivientes).
+- Sensibilidad: Detecta el 81.83% de los sobrevivientes reales.
+- Especificidad: Identifica correctamente el 76.9% de los no sobrevivientes reales.
+- Precisión: Cuando predice "sobreviviente", acierta el 84.95% de las veces.
+- Valor Predictivo Negativo: Cuando predice "no sobreviviente", acierta el 72.65% de las veces.
+
+- Kappa (0.581): Acuerdo entre predicciones y realidad más allá del azar, el valor indica un modelo "moderado-bueno".
+
+- McNemar's Test (p-value = 0.1544): No hay diferencia significativa en los errores de clasificación (FN vs. FP) (*p* > 0.05)
+
+- Prevalencia (0.6144): El 61.44% de los pasajeros en los datos no sobrevivieron (clase mayoritaria).
+
+- Intervalo de Confianza para Exactitud (95% CI: 0.7714, 0.8252): Con 95% de confianza, la exactitud real del modelo está entre 77.14% y 82.52%.
+
 ### Multicolinealidad
+
+VIF < 5: Multicolinealidad baja (no problemática).
+VIF ≥ 5: Preocupación moderada.
+VIF ≥ 10: Multicolinealidad alta (requiere acción).
 
 ```{r}
 library(car)
 vif(m2)
 ```
 
+- Todos los valores son < 2, lo que indica que no hay problemas de multicolinealidad en tu modelo.
+- Pclass: Aunque es categórica (Df=2), su GVIF ajustado (1.101) confirma baja multicolinealidad.
+- Age: Tiene el VIF más alto (1.216), pero sigue siendo seguro.
+
+Los predictores no presentan multicolinealidad, esto implica que los coeficientes estimados son estables. La multicolinealida infla el error estándar en la estimación de los coeficientes. Los resultados entonces muestran que los odds ratios reflejan efectos reales.
+
 ### Diagnóstico de influencia y residuos
 
-```{r}
-# Residuos de Pearson y Deviance
-res_pearson <- residuals(m2, type = "pearson")
-res_deviance <- residuals(m2, type = "deviance")
 
+#### Los residuos
+
+$$Residual_Pearson=\frac{(y_i-\hat{p}_i)}{\sqrt{\hat{p}_i(1-\hat{p}_i)}}$$
+Si por ejemplo $\hat{p}$ de sobrevivir es 0.9 y la $y_i$ (realidad) es cero entonces algo pasó y 
+Residual en este caso es -3. Podemos graficar los residuos con bandas de control por ejemplo $\pm 2$
+
+$$Deviance_Residual=sign(y_i-\hat{p}_i)\sqrt{-2[y_ilog(\hat{p}_i)+(1-y_i)log(1-\hat{p}_i)]}$$
+- Valores grandes (> 2 o < -2) indican observaciones que el modelo predice mal
+- Patrones sistemáticos pueden revelar problemas con los predictores
+
+```{r}
+# Residuos de Pearson
+res_pearson <- residuals(m2, type = "pearson")
+plot(res_pearson, ylab = "Residuales de Pearson", main = "Diagnóstico de Residuales")
+abline(h = c(-2, 2), col = "red", lty = 2)  # Límites de advertencia
+# Residuos Deviance
+res_deviance <- residuals(m2, type = "deviance")
+plot(res_deviance, ylab = "Residuales de Pearson", main = "Diagnóstico de Residuales")
+abline(h = c(-2, 2), col = "red", lty = 2)  # Límites de advertencia
+```
+
+- Este grupo ¿Comparten características? (ej: misma clase, edad extrema).
+
+```{r}
+# Índices de residuales con |valor| > 2
+which(abs(res_pearson)> 2) 
+# Datos de esos pasajeros
+titanic_data[which(abs(res_pearson) > 2), ]
+```
+
+- Acá encontramos las predicciones más problemáticas. Si el residual es positivo grande entonces sobrevivió contra todo pronóstico. Si es negativo grande murió cuando se esperaba que viviera.
+
+```{r}
+# Encontrar las 5 peores predicciones
+worst_cases <- order(abs(res_deviance), decreasing = TRUE)[1:5]
+titanic_data[worst_cases, c("Survived", "Pclass", "Sex", "Age")]
+```
+
+#### Leverages o Apalancamiento
+
+Hay observaciones influyentes?
+Los valores de apalancamiento (o "hat values") miden cuánto influye cada observación en sus propia predicción, basándose en su posición en el espacio de los predictores.
+
+- Rango: Entre 0 (sin influencia) y 1 (máxima influencia)
+
+Si:
+
+$$h_i>\frac{2p}{n}$$
+p = número de parámetros del modelo
+
+n = número de observaciones
+
+En este caso:
+
+$$\frac{2*6}{887}=0.0135$$
+
+```{r}
 # Leverage
 leverage <- hatvalues(m2)
+plot(leverage, ylab = "Valores de Apalancamiento", 
+     main = "Análisis de Influencia en el Modelo Titanic")
+abline(h = 2*6/887, col = "red", lty = 2)  # Línea de corte
+```
 
+```{r}
+high_leverage <- which(leverage > 2*6/887)
+titanic_data[high_leverage, c("Pclass", "Sex", "Age", "Siblings.Spouses.Aboard")]
+```
+
+Existen 49 personas que se salen de los patrones normales, por ejemplo hay personas adultas mayores que viajan solas.
+
+
+#### DFBETAS
+
+calcula una métrica crucial para diagnosticar la influencia de cada observación en los coeficientes estimados en el modelo.
+
+$$DFBETAS_{j(i)}=\frac{\hat{B}_j-\hat{B}_{j(i)}}{se(\hat{B}_{j(i)})}$$
+
+$\hat{B}_j$ = coeficiente con todas las observaciones
+$\hat{B}_{j(i)}$ = coeficiente sin la observación i
+
+Umbral de preocupación si un valor absoluto de DFBETAS > 2/$\sqrt{n}$ (n=número de observaciones) sugiere influencia significativa. Para n=887:
+
+$$0.067$$
+```{r}
 # DfBetas
 dfbetas <- dfbetas(m2)
 
-# Influencia
-influence_measures(m2)
-
+# Encontrar observaciones con influencia en Pclass3
+high_influence_pclass3 <- which(abs(dfbetas[,"Pclass3"]) > 0.067)
+# Ver esos pasajeros
+titanic_data[high_influence_pclass3, c("Pclass", "Sex", "Age", "Survived")]
+plot(dfbetas[,"Age"], ylab = "DFBETAS para Age", 
+     main = "Influencia en el coeficiente de Edad")
+abline(h = c(-0.067, 0.067), col = "red", lty = 2)
 ```
+
+
+#### Influeyntes
+
+*influence.measures(m2) - Diagnóstico Completo*
+Esta función combina múltiples métricas:
+
+- DFBETAS: Efecto en coeficientes individuales
+- DFFITS: Efecto en predicciones
+- Distancia de Cook: Impacto global
+- Valores hat: Apalancamiento
+
+Marca con asterisco (*) las observaciones que son influyentes en alguna métrica
+|DFBETAS| > 2/$\sqrt{n}$
+|DFFITS| > 3/$\sqrt{\frac{p}{n}}$
+Distancia de Cook > 4/(n-p-1)
+Hat values > 3p/n
+
+```{r}
+# Influencia
+infl<-influence.measures(m2)
+summary(infl)
+```
+
+```{r}
+# Extraer observaciones marcadas como influyentes
+infl_obs <- which(apply(infl$is.inf, 1, any))
+titanic_data[infl_obs, ]
+```
+
+Revisar esas observaciones y tomar medidas.
+
+
+**Distancia de Cook: Combina apalancamiento y residuales**
+
+```{r}
+# Influencia
+## Obtener Cook's distance
+cooks_d <- cooks.distance(m2)
+## Identificar las 5 observaciones más influyentes
+which.max(cooks_d)  # La más influyente
+head(sort(cooks_d, decreasing = TRUE), 5)  # Top 5
+```
+Cook's distance > 1: Observaciones muy influyentes.
+hat values > 2*p/n (p=nº predictores, n=muestra): Alto apalancamiento.
+
+**check_outliers(m2) - Enfoque Moderno3**
+Identifica outliers usando:
+
+Distancia de Mahalanobis
+Residuales estandarizados
+Valores hat
+
+```{r}
+#Influencia
+library(performance)
+check_outliers(m2)  # Identifica outliers influyentes
+plot(check_outliers(m2))  # Visualización interactiva
+```
+Revisando el gráfico no hay outliers peligrosos
+
+**influenceIndexPlot() - Diagnóstico Visual**
+Los gráficos muestran:
+
+Distancia de Cook: Observaciones que afectan globalmente
+Hat values: Observaciones con predictores atípicos
+Residuales studentizados: Observaciones mal ajustadas
+
+```{r}
+# Influencia
+library(car)
+influenceIndexPlot(m2, vars = c("Cook", "hat", "studentized"))
+```
+
 ## Validación Cruzada
 
 ```{r}
-library(boot)
-cv_error <- cv.glm(titanic_data, m2, K = 10)
-cv_error$delta
+library(caret)
+set.seed(123)
+ctrl <- trainControl(method = "cv", number = 10, savePredictions = TRUE)
+cv_caret <- train(m2$formula, 
+                 data = titanic_data,
+                 method = "glm",
+                 family = binomial,
+                 trControl = ctrl)
+
+# Resultados detallados
+cv_caret$results
+cv_caret$pred  # Predicciones para cada observación
+cv_caret$resample  # Métricas por pliegue
 ```
 
 
+Exactitud aproximada = 80.48%
+Esto indica que tu modelo tiene un buen poder predictivo general.
+Kappa	0.5848	Acuerdo sustancial entre predicciones y realidad, más allá del azar.
+AccuracySD = 0.0489: La exactitud varió sólo ±4.9% entre los 10 pliegues.
+KappaSD = 0.0974: Variación moderada en el acuerdo (esperable en datos desbalanceados).
+
+Este resultado es consistente con:
+
+La exactitud en validación cruzada (80.5%) es muy similar a la obtenida en el modelo completo (79.93%), lo que sugiere que no hay overfitting.
+
+Interpretación de Kappa
+
+0.41-0.60: Acuerdo moderado
+0.61-0.80: Acuerdo sustancial
+Tu valor (0.585) está en el límite superior del rango moderado.
 
 
+Los vaalores de cada repliegue:
+
+```{r}
+cv_caret$resample
+```
+Su gráfico
+
+```{r}
+library(ggplot2)
+ggplot(cv_caret$resample, aes(x = Accuracy)) +
+  geom_histogram(bins = 10, fill = "steelblue", alpha = 0.7) +
+  geom_vline(xintercept = 0.8048, color = "red", linetype = "dashed") +
+  labs(title = "Distribución de Exactitud en 10 Pliegues",
+       subtitle = "Línea roja: Exactitud promedio",
+       x = "Exactitud", y = "Frecuencia") +
+  theme_minimal()
+```
+
+Implicaciones Prácticas
+Robustez del modelo: Las pequeñas desviaciones estándar indican que el desempeño es consistente independientemente de cómo se dividan los datos.
+
+Confianza en predicciones: Puedes esperar que el modelo mantenga un ~80% de exactitud con nuevos datos similares.
+
+Áreas para mejorar:
+
+El Kappa sugiere que el modelo tiene más dificultad con:
+
+Pasajeros de clases medias (fronterizos)
+
+Casos donde edad y género dan señales contradictorias
 
 
+## Análisis
+
+De lo que se trata es que en el caso de que se repita lo sucedido en el Titanic o que esto sea una regla general de naufragios, indicarle a la gente qué garantía tiene de salvarse respecto a sus características. Se requiere que la persona se salve, es decir, disminur los Falsos Positivos, eso implica aumentar la sensibilidad y por ende el umbral óptimo estimado anteriormente. La curva ROC nos puede ayudar, pero es importante resaltar que a partir del umbral óptimo la tasa de ganancia de sensibilidad no es significativa.
+
+De todas maneras muchas personas con características reales de sobrevivientes se les mostrara como no sobrevivientes (Falso Negativo), esto implica que se impondrán más requisitos a las personas para sobrevivir.
+
+
+Se debe anizar de forma exploratoria aquellas observaciones donde el modelo falló
 
 
