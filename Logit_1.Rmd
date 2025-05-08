@@ -1,0 +1,38 @@
+---
+title: "Resistencia Insulina"
+author: "¿?"
+date: "2025-05-07"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# CONTEXTO
+
+Se tiene un marco de datos relacionado con: Factores de riesgo metabólicos (obesidad, diabetes, hipertensión). Que consta de las siguientes variables:
+
+1. EDAD: Edad del paciente en años.
+2. SEXO: Género del paciente. (0 Hombre 1 Mujer)
+3. PESO: Peso del paciente en Kg
+4. SEDENTARIO: Mide la calidad de sedentario del paciente (0 No Sedentario 1 Sedentario)
+5. HTA_OMS: Diagnóstico de hipertensión arterial (0 Normotenso 1 Hipertenso)
+6. TABACO: Mide la calidad de fumador del paciente (0 No fuma 1 fuma)
+7. ALCOHOL: Mide la calidad de bebedor del paciente (0 No bebe 1 bebe)
+8. DM: Diagnóstico de Diabetes Mellitus. (0 No diabético 1 Diabético)
+9. IR: Diagnóstico de Insulinorresistencia (IR). (0 normosensibilidad a la insulina 1 insulinorresistencia)
+
+
+```{r}
+library()
+```
+
+```{r}
+
+```
+
+
+
+
+

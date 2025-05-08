@@ -1,0 +1,273 @@
+---
+title: "Titanic"
+author: "¿?"
+date: "2025-05-07"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# CONTEXTO
+
+Se tiene un marco de datos sobre los pasajeros del Titanic, el cual consta de las siguientes variables. La idea es revisar el perfil de los sobrevivientes y preguntar si hubo discriminación en el rescate.
+
+```{r}
+titanic_data <- read.csv("titanic.csv")
+```
+
+## Variables
+ 
+- Survived: Variable factor, 1 (el pasajero sobrevivió) 0 (el pasajero no sobrevivió).
+- Pclass: En que clase viajaba el pasajero (1 = primera, 2 = segunda, 3 = tercera).
+- Name: Nombre del pasajero (valor único).
+- Sex: Sexo del pasajero.
+- Age: Edad del pasajero.
+- SibSp: Cantidad de hermanos o cónyuges a bordo del Titanic.
+- Parch: Cantidad de padres o hijos a bordo del Titanic.
+- Fare: Tarifa del pasajero.
+
+## Adecuación DATA
+
+Adecuamos las variables categóricas a dummy
+
+```{r}
+
+library(dplyr)
+titanic_data<-titanic_data%>%
+  select(-3)%>% #Eliminamos el nombre de la persona
+  mutate_at(vars(1:3),as.factor) # Convertimos a factor
+```
+
+```{r}
+titanic_data$Sex<-ifelse(titanic_data$Sex=="female","1","0")
+```
+
+```{r}
+titanic_data<-mutate_at(titanic_data,vars(3),as.factor) 
+```
+
+En este punto se debe realizar el análisis exploratorio de datos, sin embargo, el objetivo de la práctica es crear el modelo y responder a las preguntas sin ser tan rigurosos.
+
+## Ajuste del modelo
+
+Se escoge la variable "Survived" como variable respuesta y las demás predictoras. Vamos a estimar 2 modelos: uno con todas las variables y otro sin las variables significativas del primer modelo.
+
+```{r}
+m1<- glm(Survived~.,data=titanic_data,family = binomial)
+summary(m1)
+```
+
+1. La cantidad de padres y la tarifa resultaron no ser significativas.
+
+2. Los signos negativos de la variable Pclass indican que los pasajeros de la segunda y tercera categoría tuvieron menos probabilidad de sobrevivencia frente a los pasajeros de categoría 1.
+
+- Los de clase 2 tienen 1.16 unidades logísticas menos de probabilidad de sobrevivir respecto a primera clase.
+
+- Los de clase 3 tienen 2.35 unidades logísticas menos de probabilidad de sobrevivir respecto a primera clase.
+
+
+3. Las mujeres tuvieron mayor probabilidad de sobrevivir.
+
+4. El signo negativo de la edad muestra que a medida que aumenta la edad disminuye la posibilidad de sobrevivir.
+
+-Por cada año adicional de edad las probabilidades logísticas de sobrevivir disminuyen 0.043.
+
+5. El signo negativo de la cantidad de familiares muestra que a medida que aumenta ese número disminuye la posibilidad de sobrevivir.
+
+-Por cada familiar adicional las probabilidades logísticas de sobrevivir disminuyen 0.4.
+
+
+6. Bondad de ajuste:
+
+- Deviance del modelo << Deviance modelo nulo: Excelente.
+- AIC: 796.93 Para comparar con otro modelo.
+
+
+```{r}
+m2<- glm(Survived~.-Parents.Children.Aboard-Fare,data=titanic_data,family = binomial)
+summary(m2)
+```
+
+## Interpretación
+
+Nos vamos con el modelo 2 por ser más parsimonioso y porque tiene menor AIC.
+
+```{r}
+exp(coef(m2))
+```
+1. Los pasajeros de segunda clase tuvieron 0.266 veces menos posibilidades de sobrevivir frente a los de primera clase o un 73% menos de posibilidades.
+
+2. Los pasajeros de tercera clase tuvieron 0.07 veces menos posibilidades de sobrevivir frente a los de primera clase o un 93% menos de posibilidades.
+
+3. Las mujeres tenían 15.5 veces mayor odds de sobrevivir que los hombres
+
+4. Por cada año adicional de edad, el odds de sobrevivir disminuye en un 4% (1 - 0.96)
+
+5. Por cada hermano/cónyuge adicional a bordo, el odds de sobrevivir disminuye un 34% (1 - 0.66)
+
+Los odd se obtienen aplicando el logaritmo neperiano del coeficiente estimado. Ejemplo:
+
+- Pclass2 β = -1.321703
+- OR = exp(-1.321703) = 0.267
+
+
+## Validación
+
+### Pseudo R² de McFadden
+Esto mide qué tan bien el modelo se ajusta en comparación con un modelo nulo:
+
+```{r}
+library(pscl)
+pR2(m2)
+```
+1. llh (-391.41): Log-verosimilitud del modelo actual (m2).
+
+- Valor negativo (normal en log-verosimilitud), entre más cercano a 0 mejor.
+
+2. llhNull (-591.38): Log-verosimilitud del modelo nulo (solo intercepto).
+
+- Punto de comparación para evaluar la mejora del modelo completo.
+
+3. G2 (399.95): Estadístico de razón de verosimilitud (llhNull - llh).
+
+- Diferencia entre modelos, usado en pruebas de hipótesis.
+
+4. McFadden (0.338):
+
+- Interpretación similar a R² en regresión lineal pero con valores típicamente más bajos.
+
+- 0.338 indica que el modelo explica ~33.8% de la variabilidad comparado con el modelo nulo.
+
+- Valores >0.2 se consideran buenos, >0.4 excelentes.
+
+5. r2ML (0.363):
+
+- Versión de Maddala del pseudo-R².
+
+- Suele dar valores ligeramente más altos que McFadden.
+
+- 36.3% de explicación de la varianza.
+
+6. r2CU (0.493):
+
+- Pseudo-R² de Cragg-Uhler (también llamado Nagelkerke).
+
+- Ajustado para tener rango 0-1 como R² tradicional.
+
+- 49.3% es una muy buena explicación para modelos logísticos.
+
+*Evaluación global:*
+El modelo tiene un buen poder explicativo, especialmente considerando:
+
+-McFadden > 0.3 (bueno)
+-Nagelkerke cercano a 0.5 (muy bueno)
+
+Comparación con modelo nulo: La gran diferencia en log-verosimilitud (G2 = 399.95) confirma que el modelo actual es significativamente mejor.
+
+
+### Curva ROC
+
+```{r}
+hist_roc<-data.frame(real=titanic_data$Survived,pred=prob_pred)
+hist_roc$real<-as.factor(hist_roc$real)
+```
+
+```{r}
+library(ggplot2)
+ggplot(hist_roc, aes(x = pred, fill = factor(real))) +
+  geom_density(alpha = 0.6, color = NA) +  # Para densidad
+  # geom_histogram(position = "identity", alpha = 0.6, bins = 30)  # Alternativa con histograma
+  scale_fill_manual(values = c("0" = "tomato", "1" = "steelblue"), name = "Grupo") +
+  labs(x = "Probabilidad", y = "Densidad", title = "Distribución de probabilidades") +
+  theme_minimal()
+```
+
+Se generan las probabilidades predichas de supervivencia (valores entre 0 y 1) para cada observación del marco de datos, usando el modelo m2 (estimado).
+
+```{r}
+library(pROC)
+```
+```{r}
+# Probabilidades predichas
+prob_pred <- predict(m2, type = "response")
+prob_pred
+```
+type = "response" asegura que las predicciones sean probabilidades (en lugar de log-odds)
+prob_pred será un vector numérico con una probabilidad para cada pasajero.
+
+
+```{r}
+# Curva ROC
+roc_obj <- roc(titanic_data$Survived, prob_pred)
+auc<-auc(roc_obj)
+auc
+```
+Esta curva ROC muestra el excelente desempeño de tu modelo de clasificación para predecir la supervivencia en el Titanic. Tu modelo tiene un 85.7% de probabilidad de clasificar correctamente un par aleatorio de pasajeros (uno que sobrevivió y otro que no).
+
+```{r}
+ggplot() +
+  geom_line(aes(x = 1 - roc_obj$specificities, y = roc_obj$sensitivities), 
+            color = "darkorange", linewidth = 1) +
+  geom_abline(slope = 1, intercept = 0, linetype = "dashed", color = "gray") +
+  labs(x = "1 - Especificidad (Falsos Positivos)", 
+       y = "Sensibilidad (Verdaderos Positivos)",
+       title = paste("Curva ROC - AUC =", auc)) +
+  theme_minimal()
+```
+
+```{r}
+coords(roc_obj, "best", ret = "threshold")
+```
+
+El umbral 0.418491 optimiza el rendimiento de tu modelo para el problema del Titanic, priorizando un balance realista entre detectar sobrevivientes y minimizar falsas alarmas
+
+### Matriz de Confusión
+
+```{r}
+library(caret)
+
+# Umbral de 0.5
+pred_clase <- ifelse(prob_pred > 0.5, 1, 0)
+confusionMatrix(factor(pred_clase), factor(titanic_data$Survived))
+```
+### Multicolinealidad
+
+```{r}
+library(car)
+vif(m2)
+```
+
+### Diagnóstico de influencia y residuos
+
+```{r}
+# Residuos de Pearson y Deviance
+res_pearson <- residuals(m2, type = "pearson")
+res_deviance <- residuals(m2, type = "deviance")
+
+# Leverage
+leverage <- hatvalues(m2)
+
+# DfBetas
+dfbetas <- dfbetas(m2)
+
+# Influencia
+influence_measures(m2)
+
+```
+## Validación Cruzada
+
+```{r}
+library(boot)
+cv_error <- cv.glm(titanic_data, m2, K = 10)
+cv_error$delta
+```
+
+
+
+
+
+
+
+
