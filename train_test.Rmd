@@ -1,0 +1,257 @@
+---
+title: "Train-Test"
+author: "¿?"
+date: "2025-05-08"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# CONTEXTO
+
+En este ejercicio se utilizará un marco de datos de prueba para evaluar el modelo. Se usará el marco de datos "PimaIndiansDiabetes" del paquete "mlbench". El cual contiene información médica de mujeres de etnia Pima para predecir la presencia o ausencia de diabetes.
+
+Variable respuesta: diabetes (1 positivo 0 negativo)
+Variables predictoras:
+- pregnant: número de embarazos
+- glucose: concentración de glucosa
+- pressure: presión arterial diastólica
+- triceps: espesor del pliegue cutáneo del tríceps
+- insulin: nivel de insulina
+- mass: índice de masa corporal (IMC)
+- pedigree: función de herencia (diabetes pedigree)
+- age: edad
+
+```{r}
+# Cargar paquetes
+library(mlbench)
+library(dplyr)
+library(ggplot2)
+```
+
+```{r}
+# Cargar datos
+data(PimaIndiansDiabetes)
+df <- PimaIndiansDiabetes
+
+# Verificar NA's o 0's inválidos en variables clínicas
+summary(df)
+```
+
+Nota: Algunos valores como 0 en glucose, pressure, mass no son válidos fisiológicamente. Vamos a tratarlos como NA
+
+```{r}
+# Reemplazar ceros inválidos por NA
+df <- df %>%
+  mutate(across(c(glucose, pressure, triceps, insulin, mass), ~na_if(., 0)))
+
+# Quitar filas con NA's (para mantener simple)
+df <- na.omit(df)
+```
+
+```{r}
+set.seed(123)  # reproducibilidad
+n <- nrow(df)
+train_idx <- sample(seq_len(n), size = 0.7 * n)  # 70% train
+
+train_data <- df[train_idx, ]
+test_data <- df[-train_idx, ]
+
+```
+
+
+## Ajuste del Modelo
+
+Incluimos todas las variables con excepción de glucose.
+
+```{r}
+modelo<-glm(diabetes~.-glucose,data = df,family = binomial)
+summary(modelo)
+```
+Las variables pregnant, pressure y triceps resultaron no ser significativas. Las excluiremos del segundo modelo.
+
+```{r}
+modelo1<-glm(diabetes~.-glucose-pregnant-pressure-triceps,
+             data = train_data,family = binomial)
+summary(modelo1)
+```
+Bondad de ajuste:
+
+- Deviance del modelo << Deviance modelo nulo: Excelente.
+- AIC: 291.69 Para comparar con otro modelo.
+
+## Interpretación ODDS RATIOS
+
+```{r}
+exp(coef(modelo1))
+```
+1. Por cada unidad adicional de insulina, el odds de [resultado positivo] aumenta un 0.45% (casi efecto nulo).
+
+2. Por cada unidad adicional de masa corporal, el odds aumenta un 8.1%
+
+3. Por cada unidad adicional en el pedigree score, el odds se multiplica por 2.61 (aumento del 161%)
+
+4. Por cada año adicional de edad, el odds aumenta un 6.4%
+
+
+
+## Validación
+
+### Pseudo R² de McFadden
+
+```{r}
+library(pscl)
+pR2(modelo1)
+```
+McFadden (0.2): Valores >0.2 se consideran aceptables, >0.4 excelentes
+Nagelkerke (0.318): Explica ≈31.8% de la variabilidad máxima explicable
+
+Indican que el modelo tiene capacidad predictiva moderada pero significativa. Se recomienda quitar la variable insulin y probar interacciones por ejemplo mass y age.
+
+
+### Curva ROC
+
+```{r}
+library(pROC)
+# Probabilidades predichas
+prob_pred <- predict(modelo1, type = "response")
+```
+
+```{r}
+hist_roc<-data.frame(real=train_data$diabetes,pred=prob_pred)
+hist_roc$real<-as.factor(hist_roc$real)
+```
+
+```{r}
+library(ggplot2)
+ggplot(hist_roc, aes(x = pred, fill = factor(real))) +
+  geom_density(alpha = 0.6, color = NA) +  # Para densidad
+  # geom_histogram(position = "identity", alpha = 0.6, bins = 30)  # Alternativa con histograma
+  scale_fill_manual(values = c("neg" = "tomato", "pos" = "steelblue"), name = "Grupo") +
+  labs(x = "Probabilidad", y = "Densidad", title = "Distribución de probabilidades") +
+  theme_minimal()
+```
+
+```{r}
+# Curva ROC
+roc_obj <- roc(train_data$diabetes, prob_pred)
+auc<-auc(roc_obj)
+auc
+```
+
+```{r}
+ggplot() +
+  geom_line(aes(x = 1 - roc_obj$specificities, y = roc_obj$sensitivities), 
+            color = "darkorange", linewidth = 1) +
+  geom_abline(slope = 1, intercept = 0, linetype = "dashed", color = "gray") +
+  labs(x = "1 - Especificidad (Falsos Positivos)", 
+       y = "Sensibilidad (Verdaderos Positivos)",
+       title = paste("Curva ROC - AUC =", auc)) +
+  theme_minimal()
+```
+
+```{r}
+coords(roc_obj, "best", ret = "threshold")
+```
+
+```{r}
+library(caret)
+
+# Umbral de 0.5
+pred_clase <- ifelse(prob_pred > 0.3271268, "pos", "neg")
+confusionMatrix(factor(pred_clase), factor(train_data$diabetes))
+```
+
+### Multicolinealidad
+
+```{r}
+library(car)
+vif(modelo1)
+```
+
+### Diagnóstico de influencia y residuos
+
+```{r}
+#Influencia
+library(performance)
+check_outliers(modelo1)  # Identifica outliers influyentes
+plot(check_outliers(modelo1))  # Visualización interactiva
+```
+
+
+## Validación Cruzada
+
+```{r}
+library(caret)
+set.seed(123)
+ctrl <- trainControl(method = "cv", number = 10, savePredictions = TRUE)
+cv_caret <- train(modelo1$formula, 
+                 data = train_data,
+                 method = "glm",
+                 family = binomial,
+                 trControl = ctrl)
+
+# Resultados detallados
+cv_caret$results
+cv_caret$pred  # Predicciones para cada observación
+cv_caret$resample  # Métricas por pliegue
+```
+
+## Evaluación sobre conjunto test
+
+Probabilidades y clases predichas
+
+```{r}
+prob_test <- predict(modelo1, newdata = test_data, type = "response")
+clase_pred <- ifelse(prob_test > 0.3271268, "pos", "neg") %>% factor(levels = c("neg", "pos"))
+```
+
+Matriz de confusión y métricas
+
+```{r}
+library(caret)
+confusionMatrix(clase_pred, test_data$diabetes)
+```
+Curva ROC y AUC en test
+
+```{r}
+library(pROC)
+roc_test <- roc(test_data$diabetes, prob_test)
+plot(roc_test, main = "ROC - Datos de Test", col = "darkgreen")
+auc(roc_test)
+```
+
+
+## Análisis entre train y test
+
+Exactitud: Rendimiento consistente (sin sobreajuste significativo)
+Sensibilidad: Mejoró ligeramente en detección de negativos
+Especificidad: Pérdida del 8.2% en identificación de positivos
+AUC-ROC: Capacidad discriminativa buena (cercano a 0.8 es considerado bueno)
+
+### Recomendaciones para Mejorar el Modelo
+
+Manejo de desbalance:
+
+Tus datos tienen prevalencia ~65-70% para clase negativa
+Considera técnicas de balanceo:
+
+```{r}
+library(ROSE)
+data_balanced <- ovun.sample(diabetes ~ ., data = train_data, method = "both")$data
+```
+
+Tu modelo muestra:
+✅ Consistencia entre entrenamiento y evaluación
+✅ Capacidad discriminativa buena (AUC 0.78)
+⚠️ Oportunidad de mejora en identificación de casos positivos (especificidad)
+
+
+
+
+
+
+
+
