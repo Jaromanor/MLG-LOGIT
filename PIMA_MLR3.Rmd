@@ -1,0 +1,249 @@
+---
+title: "mlr3_PIMA"
+author: "¿?"
+date: "2025-05-08"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+# ENFOQUE
+Un flujo moderno con mlr3, orientado a modelado predictivo.
+
+Lo que vamos a lograr:
+
+Preprocesamiento con imputación y escalado
+Selección de variables (feature selection) tipo envoltura (wrapper)
+Ajuste de hiperparámetros del modelo: No porque no hay opciones con GLM
+Validación cruzada (CV) para entrenamiento y ajuste
+Evaluación en un conjunto de testeo (test)
+Explicación de cada paso, como para un informe claro
+Análisis de resultados finales
+
+# OTROS
+En el contexto de machine learning, un "workflow robusto" significa que no solo estás entrenando un modelo una vez, sino que:
+
+Validás el rendimiento con métodos como cross-validation
+Ajustás hiperparámetros (hyperparameter tuning)
+Comparás múltiples modelos con benchmarking
+
+Hacés todo esto de forma modular, repetible y escalable
+- Escogemos iterativamente las variables del modelo?
+- Balanceamos la data?
+- Ajustar hiperparámetros?. Ajustás hiperparámetros (hyperparameter tuning)
+
+# CONTEXTO
+
+En este script se van a trabajar los datos de PIMA pero tratando de usar una ecosistema MLR3 para tener un flujo de trabajo lo más estandar posible o estructurado. Esto es importante si se requiere reproducibilidad, validación cruzada y evaluación sólida de modelos, enfocado en la predicción y no en análisis o explicación, inferencia, o diagnóstico estructural.
+
+
+```{r}
+# Instala si no tienes
+
+library(mlr3verse)
+library(mlr3pipelines)
+library(mlr3fselect)
+library(mlbench)
+library(dplyr)
+```
+ Cargamos y limpiamos la data:
+```{r}
+data(PimaIndiansDiabetes)
+
+# Reemplazo de ceros no fisiológicos
+df <- PimaIndiansDiabetes %>%
+  mutate(across(c(glucose, pressure, triceps, insulin, mass), ~na_if(., 0)))
+```
+
+## Crear una TaskClassif
+
+En mlr3, un Task representa un conjunto de datos junto con información contextual sobre el problema de aprendizaje automático que se desea resolver. Es una abstracción formal y estructurada que encapsula:
+
+- los datos (como un data frame),
+- el tipo de problema (clasificación, regresión, etc.),
+- la variable objetivo,
+- y opcionalmente, otras configuraciones (como la clase positiva, pesos, roles de las columnas, etc.).
+
+Esto contrasta con otros frameworks como caret, que no usan una estructura formal como Task; simplemente pasan el data.frame, la variable objetivo como fórmula y el modelo, todo junto. Esto es más simple pero menos flexible y modular.
+
+```{r}
+# 1. Crear task con todas las variables
+task <- TaskClassif$new(
+  id = "diabetes",       # Nombre interno del task (útil para identificación y logs)
+  backend = df,          # El data frame o DataTable con los datos
+  target = "diabetes",   # La variable a predecir
+  positive = "pos"       # (solo para clasificación binaria) clase positiva
+)
+```
+
+Esta forma manual de modificar Task cuando quiero eliminar variables del modelo sin utilizar métodos de filtro "automatizados", digamos que por instinto el analista decide eliminar ciertas variables.
+
+```{r}
+# 2. Excluir variables específicas: Esto se hizo porque tomando todos los datos
+# algunas variables no resultaron significativas
+
+variables_a_excluir <- c("insulin", "pregnant","pressure","triceps")
+task$select(setdiff(task$feature_names, variables_a_excluir))
+
+# Verificar
+task$feature_names
+```
+
+
+## Dividir en entrenamiento y test
+
+Se muestran 2 formas: ambas por ser de clasificación implícitamente realizan muestreo estratificado.
+
+```{r}
+set.seed(123)
+split <- partition(task, ratio = 0.7)  # 70% train, 30% test
+```
+
+Este método es mejor porque se integra a otras tareas:
+
+```{r}
+set.seed(123)
+
+resampling <- rsmp("holdout")
+resampling$param_set$values$ratio <- 0.7
+resampling$instantiate(task)
+
+train_set <- resampling$train_set(1)
+test_set  <- resampling$test_set(1)
+```
+
+
+
+## Armar pipeline con preprocesamiento + modelo
+
+Este pipeline se encarga de imputar los valores faltantes automáticamente usando un árbol de regresión (recomendado para variables numéricas), luego estandariza los datos (media 0, varianza 1), y finalmente aplica regresión logística.
+
+```{r}
+# Imputación con árbol + escalado + modelo
+pipe <- po("imputelearner", learner = lrn("regr.rpart")) %>>%
+        po("scale") %>>%
+        lrn("classif.log_reg", predict_type = "prob")
+# Convertimos en GraphLearner
+learner <- GraphLearner$new(pipe)
+```
+
+## Selección de variables (envoltura)
+
+Vamos a construir un learner que permita hacer selección de variables tipo envoltura sin ajuste de hiperparámetros.
+
+```{r}
+# Validación cruzada interna
+resampling_inner <- rsmp("cv", folds = 5)
+
+# Método de búsqueda: búsqueda aleatoria
+fselector <- fs("random_search")
+
+# Criterio de parada: 20 combinaciones
+terminator <- trm("evals", n_evals = 20)
+
+# AutoFSelector
+auto_fs <- AutoFSelector$new(
+  learner = learner,
+  resampling = resampling_inner,
+  measure = msr("classif.auc"),
+  fselector = fselector,
+  terminator = terminator
+)
+```
+
+Este flujo automatiza:
+
+Aquí usamos una búsqueda aleatoria para encontrar el mejor subconjunto de variables predictoras, evaluando cada combinación con validación cruzada de 5 pliegues, optimizando el AUC.
+
+
+## Entrenar con selección de variables
+
+```{r}
+auto_fs$train(task, row_ids = split$train)
+```
+
+
+## Ver resultados del mejor modelo
+
+Podemos ver qué variables quedaron.
+
+```{r}
+# Variables seleccionadas
+auto_fs$fselect_result
+```
+
+
+## Evaluación en el conjunto de prueba
+
+Esto mide el desempeño real del modelo en datos que nunca vio: es la evaluación honesta. Las métricas nos dicen cuán bien predice la diabetes: sensibilidad, especificidad, precisión y AUC.
+
+```{r}
+# Predicción en datos de test
+prediction <- auto_fs$predict(task, row_ids = split$test)
+
+# Métricas de evaluación
+prediction$score(msrs(c("classif.acc", "classif.auc", "classif.sensitivity", "classif.specificity")))
+
+```
+## Acceder al modelo glm para inferencia
+
+
+```{r}
+modelo_final <- auto_fs$learner$model$classif.log_reg$model
+
+# Análisis inferencial
+summary(modelo_final)
+```
+
+Este flujo completo cumple con los estándares modernos de ciencia de datos, incluyendo:
+
+Imputación automática y escalado
+
+Selección de variables basada en desempeño: el modelo redujo la dimensionalidad a las variables más informativas según el AUC. Esto ayuda a evitar el sobreajuste y mejora la interpretabilidad.
+
+Evaluación cruzada robusta: el proceso de selección interna asegura que el conjunto final tiene buen desempeño en entrenamiento.
+
+Análisis inferencial con glm()
+
+Evaluación real sobre datos nuevos
+
+Este tipo de pipeline es ideal cuando se quiere predecir bien sin sacrificar la posibilidad de interpretar el modelo y entender las variables más importantes.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
