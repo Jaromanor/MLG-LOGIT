@@ -171,7 +171,7 @@ A partir de aca vamos a ajustar el modelo con y sin datos balanceados para poder
 
 ### Armar pipeline con preprocesamiento + modelo
 
-Este pipeline se encarga de imputar los valores faltantes automáticamente usando un árbol de regresión (recomendado para variables numéricas), luego estandariza los datos (media 0, varianza 1), y finalmente aplica regresión logística.
+Este pipeline se encarga de imputar los valores faltantes automáticamente usando usando la media (algo no recomendable especialmente si hay valores extremos, hay otras técnicas), luego estandariza los datos (media 0, varianza 1), y finalmente aplica regresión logística.
 
 Este pipeline se entrena con el train() en el conjunto de entrenamiento, y ese pipeline guarda internamente.
 
@@ -182,7 +182,7 @@ Se escala el test con los parámetros del escalado aprendidos en train.
 
 ```{r}
 # Imputación con árbol + escalado + modelo
-pipe <- po("imputelearner", learner = lrn("regr.rpart")) %>>%
+pipe <- po("imputemean") %>>%
         po("scale") %>>%
         lrn("classif.log_reg", predict_type = "prob")
 
@@ -264,6 +264,14 @@ Esto mide el desempeño real del modelo en datos que nunca vio: es la evaluació
 
 1. Predicción sobre el test
 
+Se crea una especie de marco de datos:
+- row_ids: identificador de las observaciones del set test.
+- truth: clasificación real de los datos.
+- prob.pos o prob.neg: Basado en el modelo estimado muestra la probabilidad de que sea positivo o negativo.
+- response: Clasificación basada en la probabilidad estimada, en este caso toma 0.5 como probabilidad, si prob.pos > 0.5 se asume "pos"
+
+
+
 ```{r}
 
 # Predicción en datos de test
@@ -281,7 +289,28 @@ autoplot(prediction, type = "roc") +
   theme_minimal()
 prediction$score(msr("classif.auc"))
 ```
-Umbral:
+
+Finalmente, calculamos las métricas para evaluar el modelo basado en umbral 0.5
+
+```{r}
+#cálculo de las métricas
+prediction$score(msrs(c(
+  "classif.acc",
+  "classif.sensitivity",
+  "classif.specificity",
+  "classif.precision",
+  "classif.fbeta"
+)))
+```
+
+
+Ahora bien, lo correcto es revisar el modelo en el contexto que queremos analizar. ¿Cuál es el interés de la prueba, por ejemplo que tan importante es diagnósticar falsamente que el paciente tiene diabetes frente a diagnosticar falsamente que está sano.
+
+Es en esta decisión donde se define el umbral más oportuno, en este caso, no nos importa aumentar los Falsos Positivos, es decir, no queremos que un paciente enfermo termine con un resultado negativo.
+
+Pero cuánto debe ser ese umbral?
+
+Verificamos el umbral óptimo de la siguiente manera aclarando que este es punto de corte (threshold) que maximiza la diferencia entre la tasa de verdaderos positivos (sensibilidad) y la tasa de falsos positivos (1 - especificidad).
 
 ```{r}
 library(pROC)
@@ -292,7 +321,7 @@ prob_pos <- prediction$prob[, "pos"]
 # Convertir etiquetas reales a 0/1
 truth <- prediction$truth
 
-row_ids    <- prediction$row_ids
+row_ids <- prediction$row_ids
 
 
 # Crear curva ROC
@@ -303,6 +332,8 @@ opt_threshold <- as.numeric(opt_coords["threshold"])
 opt_threshold
 
 ```
+Se establece que el umbral óptimo es 0.2805812. El índice de Youden (J = Sensibilidad + Especificidad - 1) busca el threshold que maximiza la capacidad del modelo para distinguir entre clases, evitando sesgos hacia sensibilidad o especificidad extremas. Con este umbral van aumentar los FP
+
 
 3. Clasificar con el umbral personalizado
 
@@ -326,7 +357,7 @@ prediction_custom <- mlr3::PredictionClassif$new(
 )
 ```
 
-4. Cálculo de métricas
+3.1. Cálculo de métricas
 
 ```{r}
 prediction_custom$score(msrs(c(
@@ -338,32 +369,23 @@ prediction_custom$score(msrs(c(
 )))
 ```
 
-5. Matriz de confusión y curva roc (roc con datos de test)
+3.2. Matriz de confusión y curva roc (roc con datos de test)
 
 ```{r}
 # Matriz de confusión
-prediction$confusion
+prediction_custom$confusion
 
 library(mlr3viz)
 library(ggplot2)  # para customizar si quieres
 
-autoplot(prediction, type = "roc") +
+autoplot(prediction_custom, type = "roc") +
   ggtitle("Curva ROC - Datos de Test") +
   theme_minimal()
 prediction$score(msr("classif.auc"))
 
 ```
 
-
-
-
-
-
-
-
-
-
-
+La sensibilidad pasa de 0.53 (umbral 0.5) a 0.81 (umbral óptimo). Se recomienda bajar el umbral por el propósito de la prueba.
 
 
 
