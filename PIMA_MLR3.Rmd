@@ -46,6 +46,8 @@ library(mlr3pipelines)
 library(mlr3fselect)
 library(mlbench)
 library(dplyr)
+library(mlr3measures)
+
 ```
  Cargamos y limpiamos la data:
 ```{r}
@@ -80,7 +82,7 @@ task <- TaskClassif$new(
 Esta forma manual de modificar Task cuando quiero eliminar variables del modelo sin utilizar métodos de filtro "automatizados", digamos que por instinto el analista decide eliminar ciertas variables.
 
 ```{r}
-# 2. Excluir variables específicas: Esto se hizo porque tomando todos los datos
+# 2. Excluir variables específicas: Esto se hace porque tomando todos los datos
 # algunas variables no resultaron significativas
 
 variables_a_excluir <- c("insulin", "pregnant","pressure","triceps")
@@ -119,14 +121,30 @@ test_set  <- resampling$test_set(1)
 
 Este pipeline se encarga de imputar los valores faltantes automáticamente usando un árbol de regresión (recomendado para variables numéricas), luego estandariza los datos (media 0, varianza 1), y finalmente aplica regresión logística.
 
+Este pipeline se entrena con el train() en el conjunto de entrenamiento, y ese pipeline guarda internamente.
+
+Por lo tanto, cuando luego haces predict(pipe, newdata = test_set), automáticamente:
+
+Se imputan los NAs del test usando el modelo aprendido en train, y
+Se escala el test con los parámetros del escalado aprendidos en train.
+
 ```{r}
 # Imputación con árbol + escalado + modelo
 pipe <- po("imputelearner", learner = lrn("regr.rpart")) %>>%
         po("scale") %>>%
         lrn("classif.log_reg", predict_type = "prob")
+
+```
+GraphLearner es una interfaz envoltorio (wrapper) en mlr3pipelines que convierte un pipeline (Graph) en un objeto tipo Learner, compatible con mlr3. Es decir:
+
+Toma un pipeline de preprocesamiento y modelo(s), y lo convierte en algo que puede ser entrenado (train()) y evaluado (predict()) como cualquier otro Learner.
+
+```{r}
 # Convertimos en GraphLearner
 learner <- GraphLearner$new(pipe)
 ```
+
+
 
 ## Selección de variables (envoltura)
 
@@ -158,14 +176,28 @@ Aquí usamos una búsqueda aleatoria para encontrar el mejor subconjunto de vari
 
 
 ## Entrenar con selección de variables
-
+Aquí es donde se corre el método de selección de variables.
 ```{r}
 auto_fs$train(task, row_ids = split$train)
 ```
+ocurre lo siguiente:
+
+1. Se inicializa el FSelector (como random_search).
+
+2. Se generan distintos subconjuntos de variables.
+
+3. Para cada subconjunto:
+
+4. Se entrena el learner con split$train.
+
+5. Se evalúa con el esquema de resampling interno (como CV).
+
+6. El mejor subconjunto de variables se selecciona según la métrica.
+
+7. El AutoFSelector entrena el modelo final con ese subconjunto óptimo, usando los datos de split$train.
 
 
 ## Ver resultados del mejor modelo
-
 Podemos ver qué variables quedaron.
 
 ```{r}
@@ -176,19 +208,107 @@ auto_fs$fselect_result
 
 ## Evaluación en el conjunto de prueba
 
-Esto mide el desempeño real del modelo en datos que nunca vio: es la evaluación honesta. Las métricas nos dicen cuán bien predice la diabetes: sensibilidad, especificidad, precisión y AUC.
+Esto mide el desempeño real del modelo en datos que nunca vio: es la evaluación honesta. Las métricas nos dicen cuán bien predice la diabetes: sensibilidad, especificidad, precisión y AUC. Para ello se van a realizar los siguientes pasos:
+
+1. Predicción sobre el test
 
 ```{r}
+
 # Predicción en datos de test
 prediction <- auto_fs$predict(task, row_ids = split$test)
+```
 
-# Métricas de evaluación
-prediction$score(msrs(c("classif.acc", "classif.auc", "classif.sensitivity", "classif.specificity")))
+2. Construcción de la curva ROC y cálculo del umbral: Esto se hace para generar las métricas con el umbral óptimo y después ajustarlo de acuerdo con las necesidades o interés de la prueba, es decir, queremos aumentar o disminuir los falsos positivos?
+
+```{r}
+library(mlr3viz)
+library(ggplot2)  # para customizar si quieres
+
+autoplot(prediction, type = "roc") +
+  ggtitle("Curva ROC - Datos de Test") +
+  theme_minimal()
+prediction$score(msr("classif.auc"))
+```
+Umbral:
+
+```{r}
+library(pROC)
+
+# Probabilidades para la clase positiva
+prob_pos <- prediction$prob[, "pos"]
+
+# Convertir etiquetas reales a 0/1
+truth <- prediction$truth
+
+row_ids    <- prediction$row_ids
+
+
+# Crear curva ROC
+roc_obj <- roc(response = truth, predictor = prob_pos)
+
+opt_coords <- coords(roc_obj, "best", best.method = "youden", ret = c("threshold", "sensitivity", "specificity"))
+opt_threshold <- as.numeric(opt_coords["threshold"])
+opt_threshold
 
 ```
+
+3. Clasificar con el umbral personalizado
+
+
+```{r}
+# Reclasificación manual
+predicted_custom <- ifelse(prob_pos >= opt_threshold, "pos", "neg")
+```
+
+```{r}
+predicted_custom <- factor(predicted_custom, levels = levels(truth))
+```
+
+
+```{r}
+prediction_custom <- mlr3::PredictionClassif$new(
+  truth = truth,
+  response = predicted_custom,
+  prob = prediction$prob,
+  row_ids = prediction$row_ids
+)
+```
+
+4. Cálculo de métricas
+
+```{r}
+prediction_custom$score(msrs(c(
+  "classif.acc",
+  "classif.sensitivity",
+  "classif.specificity",
+  "classif.precision",
+  "classif.fbeta"
+)))
+```
+
+5. Matriz de confusión y curva roc (roc con datos de test)
+
+```{r}
+# Matriz de confusión
+prediction$confusion
+
+library(mlr3viz)
+library(ggplot2)  # para customizar si quieres
+
+autoplot(prediction, type = "roc") +
+  ggtitle("Curva ROC - Datos de Test") +
+  theme_minimal()
+prediction$score(msr("classif.auc"))
+
+```
+
+
+
+
+
+
+
 ## Acceder al modelo glm para inferencia
-
-
 ```{r}
 modelo_final <- auto_fs$learner$model$classif.log_reg$model
 
