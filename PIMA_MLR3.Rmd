@@ -115,9 +115,61 @@ train_set <- resampling$train_set(1)
 test_set  <- resampling$test_set(1)
 ```
 
+## Análisis de desbalance
+
+Es importante establecer que en este ejercicio nos la estamos jugando por un logit, por lo que se recomienda aplicar técnicas de balanceo antes del entrenamiento.
+
+Pero ojo: Hay dos enfoques válidos, depende del objetivo:
+
+| Enfoque                                  | ¿Cuándo usarlo?                                                                                                      |
+| ---------------------------------------- | -------------------------------------------------------------------------------------------------------------------- |
+| **Balancear antes de elegir el modelo**  | Cuando se sospecha que el desbalance afectará todos los modelos                                                      |
+| **Probar modelos sin balancear primero** | Cuando se quieren comparar algoritmos en condiciones reales                                                          |
+| **Balancear por modelo**                 | Cuando un modelo (como árboles) puede compensar el desbalance internamente, pero otros no (como regresión logística) |
 
 
-## Armar pipeline con preprocesamiento + modelo
+```{r}
+data_train<-df[train_set,]
+```
+
+```{r}
+table(data_train$diabetes)
+```
+
+```{r}
+prop.table(table(data_train$diabetes))
+```
+
+### Opción A: Sobremuestreo (po("classbalancing") con adjust = "minor" o "major")
+
+
+```{r}
+# Sobremuestreo de clase minoritaria
+po_bal_oversample <- po("classbalancing",
+                        id = "oversample",
+                        adjust = "minor",
+                        reference = "major",
+                        shuffle = FALSE)
+```
+
+
+### Opción B: Submuestreo (adjust = "major")
+
+```{r}
+# Submuestreo de clase mayoritaria
+po_bal_undersample <- po("classbalancing",
+                         id = "undersample",
+                         adjust = "major",
+                         reference = "minor",
+                         shuffle = FALSE)
+```
+
+A partir de aca vamos a ajustar el modelo con y sin datos balanceados para poder evaluar:
+
+
+## Datos desbalanceados
+
+### Armar pipeline con preprocesamiento + modelo
 
 Este pipeline se encarga de imputar los valores faltantes automáticamente usando un árbol de regresión (recomendado para variables numéricas), luego estandariza los datos (media 0, varianza 1), y finalmente aplica regresión logística.
 
@@ -146,7 +198,7 @@ learner <- GraphLearner$new(pipe)
 
 
 
-## Selección de variables (envoltura)
+### Selección de variables (envoltura)
 
 Vamos a construir un learner que permita hacer selección de variables tipo envoltura sin ajuste de hiperparámetros.
 
@@ -175,7 +227,7 @@ Este flujo automatiza:
 Aquí usamos una búsqueda aleatoria para encontrar el mejor subconjunto de variables predictoras, evaluando cada combinación con validación cruzada de 5 pliegues, optimizando el AUC.
 
 
-## Entrenar con selección de variables
+### Entrenar con selección de variables
 Aquí es donde se corre el método de selección de variables.
 ```{r}
 auto_fs$train(task, row_ids = split$train)
@@ -197,7 +249,7 @@ ocurre lo siguiente:
 7. El AutoFSelector entrena el modelo final con ese subconjunto óptimo, usando los datos de split$train.
 
 
-## Ver resultados del mejor modelo
+### Ver resultados del mejor modelo
 Podemos ver qué variables quedaron.
 
 ```{r}
@@ -206,7 +258,7 @@ auto_fs$fselect_result
 ```
 
 
-## Evaluación en el conjunto de prueba
+### Evaluación en el conjunto de prueba
 
 Esto mide el desempeño real del modelo en datos que nunca vio: es la evaluación honesta. Las métricas nos dicen cuán bien predice la diabetes: sensibilidad, especificidad, precisión y AUC. Para ello se van a realizar los siguientes pasos:
 
@@ -301,6 +353,200 @@ autoplot(prediction, type = "roc") +
 prediction$score(msr("classif.auc"))
 
 ```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+## Con Balanceo
+
+
+### Armar pipeline con preprocesamiento + modelo
+
+
+```{r}
+# Imputación con árbol + escalado + modelo
+pipe <- po_bal_oversample %>>%
+  po("imputelearner", learner = lrn("regr.rpart")) %>>%
+        po("scale") %>>%
+        lrn("classif.log_reg", predict_type = "prob")
+
+```
+
+
+```{r}
+# Convertimos en GraphLearner
+learner <- GraphLearner$new(pipe)
+```
+
+### Selección de variables (envoltura)
+
+```{r}
+# Validación cruzada interna
+resampling_inner <- rsmp("cv", folds = 5)
+
+# Método de búsqueda: búsqueda aleatoria
+fselector <- fs("random_search")
+
+# Criterio de parada: 20 combinaciones
+terminator <- trm("evals", n_evals = 20)
+
+# AutoFSelector
+auto_fs <- AutoFSelector$new(
+  learner = learner,
+  resampling = resampling_inner,
+  measure = msr("classif.auc"),
+  fselector = fselector,
+  terminator = terminator
+)
+```
+
+
+### Entrenar con selección de variables
+Aquí es donde se corre el método de selección de variables.
+```{r}
+auto_fs$train(task, row_ids = split$train)
+```
+
+### Ver resultados del mejor modelo
+Podemos ver qué variables quedaron.
+
+```{r}
+# Variables seleccionadas
+auto_fs$fselect_result
+```
+
+
+### Evaluación en el conjunto de prueba
+
+Esto mide el desempeño real del modelo en datos que nunca vio: es la evaluación honesta. Las métricas nos dicen cuán bien predice la diabetes: sensibilidad, especificidad, precisión y AUC. Para ello se van a realizar los siguientes pasos:
+
+1. Predicción sobre el test
+
+```{r}
+
+# Predicción en datos de test
+prediction <- auto_fs$predict(task, row_ids = split$test)
+```
+
+2. Construcción de la curva ROC y cálculo del umbral: Esto se hace para generar las métricas con el umbral óptimo y después ajustarlo de acuerdo con las necesidades o interés de la prueba, es decir, queremos aumentar o disminuir los falsos positivos?
+
+```{r}
+library(mlr3viz)
+library(ggplot2)  # para customizar si quieres
+
+autoplot(prediction, type = "roc") +
+  ggtitle("Curva ROC - Datos de Test") +
+  theme_minimal()
+prediction$score(msr("classif.auc"))
+```
+Umbral:
+
+```{r}
+library(pROC)
+
+# Probabilidades para la clase positiva
+prob_pos <- prediction$prob[, "pos"]
+
+# Convertir etiquetas reales a 0/1
+truth <- prediction$truth
+
+row_ids    <- prediction$row_ids
+
+
+# Crear curva ROC
+roc_obj <- roc(response = truth, predictor = prob_pos)
+
+opt_coords <- coords(roc_obj, "best", best.method = "youden", ret = c("threshold", "sensitivity", "specificity"))
+opt_threshold <- as.numeric(opt_coords["threshold"])
+opt_threshold
+
+```
+
+3. Clasificar con el umbral personalizado
+
+
+```{r}
+# Reclasificación manual
+predicted_custom <- ifelse(prob_pos >= opt_threshold, "pos", "neg")
+```
+
+```{r}
+predicted_custom <- factor(predicted_custom, levels = levels(truth))
+```
+
+
+```{r}
+prediction_custom <- mlr3::PredictionClassif$new(
+  truth = truth,
+  response = predicted_custom,
+  prob = prediction$prob,
+  row_ids = prediction$row_ids
+)
+```
+
+4. Cálculo de métricas
+
+```{r}
+prediction_custom$score(msrs(c(
+  "classif.acc",
+  "classif.sensitivity",
+  "classif.specificity",
+  "classif.precision",
+  "classif.fbeta"
+)))
+```
+
+5. Matriz de confusión y curva roc (roc con datos de test)
+
+```{r}
+# Matriz de confusión
+prediction$confusion
+
+library(mlr3viz)
+library(ggplot2)  # para customizar si quieres
+
+autoplot(prediction, type = "roc") +
+  ggtitle("Curva ROC - Datos de Test") +
+  theme_minimal()
+prediction$score(msr("classif.auc"))
+
+```
+
+## Con Balanceo
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
